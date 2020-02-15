@@ -1,0 +1,76 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from WindPy import *  # 万矿数据接口
+w.start()
+
+# 选择研究的区间
+s_date = '2019-01-01'
+e_date = '2020-01-01'
+
+## 获取股票池
+stocks = w.wset("sectorconstituent", "date="+s_date+";windcode=000906.SH").Data[1] # 000906.SH表示中证800股票池
+
+## 获取因子财务数据市盈率和总市值
+pe = w.wsd(stocks,'pe_ttm',s_date,e_date,usedf = True)[1] # 得到一个二维的数据结构，横轴股票池，纵轴时间
+ev = w.wsd(stocks,'ev',s_date,e_date,usedf = True)[1]
+
+## 相关性分析
+corr_list = []  # 求不同截面两个指标的相关系数，存进列表
+for i in range(len(pe)):
+    corr_list.append(pe.iloc[i].corr(ev.iloc[i]))
+corr_list = np.array(corr_list).mean()  # 先转化为数组再求不同时间的均值
+
+## 获取下期收益数据，用于因子测试
+Period = 'M'  # 按月测试
+date = w.wsd('000001.SZ','close',s_date,e_date,period = Period,usedf = True)[1].index
+d1 = w.tdaysoffset(1, date[0], Period = Period,usedf=True).Data[0][0].strftime('%Y-%m-%d')  # 时间往后推一个周期，并且格式转化为字符串
+d2 = w.tdaysoffset(1, date[-1],Period = Period, usedf=True).Data[0][0].strftime('%Y-%m-%d')
+next_ret = w.wsd(stocks, "pct_chg", d1, d2, usedf=True, Period = Period)[1].fillna(value = 0)
+f = lambda x: x/100  # 万矿收益率数据单位为100%，这里换算成小数
+next_ret = next_ret.applymap(f)
+
+## ic测试
+next_ret.fillna(value = 0,inplace = True) # 异常值填充为0
+pe.fillna(value = 0,inplace = True)
+ic_s = []
+
+for i in range(len(date)):
+    pe_i = pe.loc[date[i]] # 截面i的pe
+    next_ret_i = next_ret.iloc[i] # 截面i的下期收益
+    ic_s.append(pe_i.corr(next_ret_i,method='spearman')) # 求秩相关系数
+    
+ic_s = pd.Series(ic_s) # 列表转化为Series，从而能够计算各统计量
+rate = len(ic_s[ic_s>=0])/len(ic_s)  # ic值大于0的比例
+IC_mean = ic_s.mean()  # ic均值
+IC_std = ic_s.std()  # ic标准差
+IC_IR = ic_s.mean()/ic_s.std()  # ic_IR用来衡量因子有效性
+
+## 分层测试
+return_list = []
+return_s = []
+for i in range(len(date)):
+    pe_i = pe.loc[date[i]] # 截面i的pe
+    next_ret_i = next_ret.iloc[i] # 截面i的下期收益
+    df = pd.DataFrame([pe_i,next_ret_i]).T # 组合两种数据
+    df.columns = ['pe','next_ret']
+    df.sort_values(['pe'])  # 按因子值排序
+    num = 10  # 分10组
+    return_list=[]
+    for j in range(num):  
+        n1 = round(len(df)*j/num)
+        n2 = round(len(df)*(j+1)/num)
+        df_j = df.iloc[n1:n2]
+        return_j = df_j['next_ret'].mean()+1 # 求各组合的收益
+        return_list.append(return_j)
+    return_s.append(return_list)
+
+x = np.array(return_s).T  # 二维列表转化为二维数组转置
+return_s = [list(i) for i in x] 
+
+for i in range(len(return_s)): # 计算累计收益
+    x = return_s[i]
+    for j in range(1,len(x)):
+        x[j] = x[j]*x[j-1]
+    return_s[i] = x
+culmu = [re[-1] for re in return_s] # 每一组的最终收益
